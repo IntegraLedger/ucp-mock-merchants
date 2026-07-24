@@ -21,9 +21,20 @@ For a merchant id `:m` (`homegoods`, `apihub`, `makermart`):
 | `GET /:m/.well-known/legal-context.json` | **LCP discovery** — `terms` URL + `atrHash` + `disputeResolution` (AAA) |
 | `GET /:m/terms/:atrHash` | the **byte-stable terms**, content-addressed (full 64-hex; truncated → `400`) |
 | `GET /:m/catalog` | JSON catalog |
-| `POST /:m/checkout` | a **merchant-signed UCP Checkout object** that welds the LCP reference in (Tier-A `links` + Tier-B `extensions`), plus `checkout_jwt` and `checkout_hash` |
-| `POST /:m/ap2/receipt` | verify an **AP2 mandate bundle** (bound by `checkout_hash`) → signed receipt |
+| `POST /:m/checkout` | one-shot: a **merchant-signed UCP Checkout object** from a full item list — welds the LCP reference in (Tier-A `links` + Tier-B `extensions`), plus `checkout_jwt` and `checkout_hash` |
+| `POST /:m/cart` | open a **mutable cart session** → `{ session_id, line_items, total }` |
+| `POST /:m/cart/:sid/items` | **add** an item `{ sku, qty }` (increments if present) → priced cart |
+| `DELETE /:m/cart/:sid/items/:sku` | **remove** a line → priced cart |
+| `GET /:m/cart/:sid` | **view** the cart (priced, running total) |
+| `POST /:m/cart/:sid/checkout` | sign the UCP Checkout **from the cart** (same output as `/checkout`) |
+| `POST /:m/ap2/receipt` | **receive payment**: verify the **AP2 mandate bundle** (bound by `checkout_hash`) → signed receipt with `payment.status: "captured"` (mock) |
 | `GET /health` | liveness |
+
+Two ways to reach a signed checkout: **one-shot** (`POST /checkout` with the full list) or a
+**mutable cart** (`POST /cart` → add/remove → `POST /cart/:sid/checkout`). Both end at the same
+`ap2/receipt` payment step. The cart store is in-memory (**mock/dev** — not durable across
+production isolates); back it with D1 or a Durable Object for real use (the `src/lib/cart.ts`
+function shapes stay the same).
 
 The LCP reference (`atrHash`) rides both the UCP checkout `extensions["org.legalcontextprotocol.legal-context"]`
 (Tier B, integrity) and a `links[].terms_of_service` (Tier A, discovery). AP2 binds it: the

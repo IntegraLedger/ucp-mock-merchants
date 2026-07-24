@@ -13,6 +13,7 @@ import { atrHashOf, publicOf } from './lib/crypto.js';
 import { buildLegalContext, lcpReference } from './lib/lcp.js';
 import { buildSignedCheckout } from './lib/checkout.js';
 import { verifyAndReceipt, type MandateBundle } from './lib/ap2.js';
+import { type CartStore, createCart, addItem, removeItem, getCart, markCheckedOut, cartView } from './lib/cart.js';
 
 type Bindings = Record<string, never>;
 const app = new Hono<{ Bindings: Bindings }>();
@@ -38,6 +39,12 @@ async function atrFor(m: Merchant): Promise<string> {
 
 const origin = (url: string): string => new URL(url).origin;
 const base = (url: string, id: string): string => `${origin(url)}/${id}`;
+
+// In-memory cart sessions (MOCK/DEV — not durable across production isolates;
+// back with D1 or a Durable Object for real use). Keyed by session id.
+const carts: CartStore = new Map();
+// Turn any thrown cart/checkout error into a 4xx instead of a 500.
+const fail = (err: unknown): { error: string } => ({ error: err instanceof Error ? err.message : String(err) });
 
 // --- landing + health -----------------------------------------------------
 
@@ -125,6 +132,70 @@ app.post('/:id/checkout', async (c) => {
     createdAt: new Date().toISOString(),
   });
   return c.json({ ...result, lcp_reference: lcpReference(await atrFor(m)) });
+});
+
+// --- per-merchant: mutable cart session (add / remove / view / checkout) ---
+// Stateful alternative to the one-shot POST /checkout above:
+//   POST   /:id/cart                       → open a session
+//   POST   /:id/cart/:sid/items {sku,qty}  → add (increments if present)
+//   DELETE /:id/cart/:sid/items/:sku       → remove a line
+//   GET    /:id/cart/:sid                  → view (priced, running total)
+//   POST   /:id/cart/:sid/checkout         → sign the UCP Checkout from the cart
+
+app.post('/:id/cart', (c) => {
+  const m = getMerchant(c.req.param('id'));
+  const cart = createCart(carts, m.id, crypto.randomUUID(), new Date().toISOString());
+  return c.json(cartView(m, cart), 201);
+});
+
+app.get('/:id/cart/:sid', (c) => {
+  const m = getMerchant(c.req.param('id'));
+  try {
+    return c.json(cartView(m, getCart(carts, m.id, c.req.param('sid'))));
+  } catch (err) {
+    return c.json(fail(err), 404);
+  }
+});
+
+app.post('/:id/cart/:sid/items', async (c) => {
+  const m = getMerchant(c.req.param('id'));
+  const body = (await c.req.json().catch(() => ({}))) as { sku?: string; qty?: number };
+  if (!body.sku) return c.json({ error: 'sku required' }, 400);
+  try {
+    const cart = addItem(carts, m, c.req.param('sid'), body.sku, body.qty ?? 1);
+    return c.json(cartView(m, cart));
+  } catch (err) {
+    return c.json(fail(err), 400);
+  }
+});
+
+app.delete('/:id/cart/:sid/items/:sku', (c) => {
+  const m = getMerchant(c.req.param('id'));
+  try {
+    const cart = removeItem(carts, m.id, c.req.param('sid'), c.req.param('sku'));
+    return c.json(cartView(m, cart));
+  } catch (err) {
+    return c.json(fail(err), 400);
+  }
+});
+
+app.post('/:id/cart/:sid/checkout', async (c) => {
+  const m = getMerchant(c.req.param('id'));
+  try {
+    const cart = markCheckedOut(carts, m.id, c.req.param('sid'));
+    const result = await buildSignedCheckout({
+      merchant: m,
+      items: cart.items,
+      atrHash: await atrFor(m),
+      legalContextUrl: `${base(c.req.url, m.id)}/.well-known/legal-context.json`,
+      disputeResolution: m.disputeResolution,
+      checkoutId: cart.id, // the checkout is keyed to the cart session
+      createdAt: new Date().toISOString(),
+    });
+    return c.json({ ...result, session_id: cart.id, lcp_reference: lcpReference(await atrFor(m)) });
+  } catch (err) {
+    return c.json(fail(err), 400);
+  }
 });
 
 // --- per-merchant: AP2 receipt (verify the mandate bundle) ----------------

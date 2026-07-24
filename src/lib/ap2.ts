@@ -44,11 +44,19 @@ export async function buildMandateBundle(opts: {
   return { buyer_public_jwk: publicOf(opts.buyerKey), checkout_mandate, payment_mandate };
 }
 
+export interface Payment {
+  handler: string; // the UCP payment handler (mock: dev.ucp.mock_payment)
+  instrument_id: string;
+  amount: { amount: number; currency: string };
+  status: 'captured'; // mock: no real settlement, but the mandate authorized the charge
+}
+
 export interface Receipt {
   status: 'authorized' | 'declined';
   checkout_id: string;
   checkout_hash: string;
   order_id?: string;
+  payment?: Payment; // what was "received" (mock capture)
   error?: string;
   iat: number;
   receipt_jws: string; // merchant-signed
@@ -86,10 +94,23 @@ export async function verifyAndReceipt(opts: {
     throw new Error('payment mandate transaction_id does not bind to this checkout');
   }
 
+  // 4. "Receive" the payment: read the authorized instrument + amount from the
+  //    Payment Mandate. Mock capture — no settlement, but the charge is authorized.
+  const pmp = pm.payload as Record<string, unknown>;
+  const instrument = (pmp.payment_instrument ?? {}) as { type?: string; id?: string };
+  const amt = (pmp.payment_amount ?? {}) as { amount?: number; currency?: string };
+  if (!instrument.type) throw new Error('payment mandate missing payment_instrument');
+  const payment: Payment = {
+    handler: instrument.type,
+    instrument_id: instrument.id ?? '',
+    amount: { amount: amt.amount ?? 0, currency: amt.currency ?? '' },
+    status: 'captured',
+  };
+
   const receipt_jws = await signJws(
     { kid: merchant.kid },
-    { status: 'authorized', checkout_id, checkout_hash, order_id: opts.orderId, iat: opts.iat },
+    { status: 'authorized', checkout_id, checkout_hash, order_id: opts.orderId, payment, iat: opts.iat },
     merchant.signingKey,
   );
-  return { status: 'authorized', checkout_id, checkout_hash, order_id: opts.orderId, iat: opts.iat, receipt_jws };
+  return { status: 'authorized', checkout_id, checkout_hash, order_id: opts.orderId, payment, iat: opts.iat, receipt_jws };
 }
