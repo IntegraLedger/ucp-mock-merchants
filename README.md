@@ -1,4 +1,4 @@
-# UCP + AP2 + LCP Mock Merchants
+# Mock Merchants — UCP · AP2 · x402 · MCP · A2A · ACP (+ LCP)
 
 Reference **merchant** surfaces for agentic commerce — mock merchants that implement **six
 agentic-commerce protocols** and weld the **LCP (Legal Context Protocol)** legal-context
@@ -20,10 +20,14 @@ whichever protocol Fisher builds against, the merchant and its legal context are
 
 ## Live
 
-- **Worker:** `https://ucp-mock-merchants.dfisher-3f3.workers.dev`
-- **Test console (Worker-hosted):** `/console` on the Worker
-- **Conformance report (JSON):** `/report` (all merchants) or `/:m/report`
-- **Test app (Cloudflare Pages):** see the deploy output / `pnpm pages:deploy`
+Deployed to the Integra Cloudflare account (davidoberger@gmail.com):
+
+- **Worker:** https://ucp-mock-merchants.dfisher-3f3.workers.dev
+- **Test console (Worker-hosted):** https://ucp-mock-merchants.dfisher-3f3.workers.dev/console
+- **Conformance report (JSON):** https://ucp-mock-merchants.dfisher-3f3.workers.dev/report (all merchants) · `…/:m/report` (one)
+- **Test app (Cloudflare Pages):** https://ucp-mock-merchants-console.pages.dev (redeploy with `pnpm pages:deploy`)
+
+Redeploy the Worker with `pnpm deploy`. (`wrangler` needs Node 22+.)
 
 Now a full commerce mock: a **rich, Wayfair-style product model** (variants, dimensions,
 weight, images, inventory, shipping, tax), a **catalog management API** (add/update/remove
@@ -44,8 +48,8 @@ inspectable merchant** you can point new code at and get deterministic, verifiab
 
 Three things ship here:
 
-1. **The merchant surfaces** (`src/index.ts` + `src/lib/*`) — the full UCP/AP2/LCP HTTP contract
-   plus catalog management and order lifecycle.
+1. **The merchant surfaces** (`src/index.ts` + `src/lib/*`) — the full UCP/AP2/x402/MCP/A2A/ACP +
+   LCP HTTP contract plus catalog management and order lifecycle.
 2. **A reference buyer** (`src/buyer.ts`) — a worked, verify-before-pay buyer agent. Fisher will
    likely build the production buyer on the demo code; this is the **shape to copy**.
 3. **A catalog you can set up** — seed products ship in code, and `POST /:m/products` (or
@@ -57,7 +61,7 @@ pricing, hit `POST /:m/orders/quote`.
 
 ---
 
-## The three protocols, in one paragraph each
+## The protocols, in one paragraph each
 
 - **UCP (Universal Commerce Protocol)** — how an agent discovers a merchant and transacts. The
   merchant publishes a manifest at `/.well-known/ucp` (services, capabilities, payment handlers,
@@ -113,7 +117,8 @@ live in the ProductStore (`src/lib/catalog.ts`), seeded per merchant and editabl
 pnpm install
 pnpm smoke        # in-process end-to-end proof — build → sign → mandate → verify → tamper-fail
 pnpm buyer        # run the reference buyer against a merchant, print the step trace
-pnpm test         # vitest: flow + buyer + cart + commerce (catalog CRUD, pricing, lifecycle)
+pnpm report       # run the conformance report (all merchants, in-process) — CI-friendly
+pnpm test         # vitest — 20 tests: flow + buyer + cart + commerce + x402 + protocols
 pnpm typecheck
 pnpm dev          # wrangler dev — open the printed URL, visit /homegoods/
 pnpm deploy       # wrangler deploy
@@ -180,7 +185,7 @@ Per merchant `:m` = `homegoods` | `apihub` | `makermart`. `wrangler dev` serves 
 ### Discovery
 | Route | What |
 |---|---|
-| `GET /:m/.well-known/ucp` | UCP manifest — capabilities (`checkout`, `catalog`, `legal-context`), `payment_handlers`, `signing_keys` |
+| `GET /:m/.well-known/ucp` | UCP manifest — capabilities (`checkout`, `catalog`, `x402`, `mcp`, `a2a`, `agenticcommerce`, `legal-context`), `payment_handlers` (`dev.ucp.mock_payment`, `x402`), `signing_keys` |
 | `GET /:m/.well-known/legal-context.json` | LCP discovery — `terms` URL + `atrHash` + `disputeResolution` |
 | `GET /:m/terms/:atrHash` | the byte-stable terms (content-addressed; full 64-hex or `400`/`404`) |
 
@@ -236,7 +241,7 @@ The `X-PAYMENT` header is base64 of a `PaymentPayload` (`{ x402Version, scheme, 
 | Route | What |
 |---|---|
 | `GET /:m/report` \| `GET /report` | run the self-check suite (16 checks/merchant across all six protocols) → JSON `{ ok, passed, failed, checks }`; HTTP `200` if all pass else `500` — **for Fisher's dev env / CI** |
-| `GET /console` | Worker-hosted test console — exercises every surface (discovery, catalog CRUD, cart, quote, checkout, AP2 pay, x402, order lifecycle, report) |
+| `GET /console` | Worker-hosted test console — exercises every surface (discovery, catalog CRUD, cart, quote, checkout, AP2 pay, x402, MCP, A2A, ACP, order lifecycle, report) |
 | `GET /` | landing · `GET /:m/` minimal storefront · `GET /health` |
 
 `pnpm report` runs the same suite from the CLI (in-process or against a live URL) and exits
@@ -299,12 +304,16 @@ pnpm buyer http://localhost:8787/homegoods
 
 ---
 
-## Wiring into the LCP demo
+## Wiring into the LCP demo (follow-up — not yet done)
 
-`pnpm deploy` to the Integra Cloudflare account; each merchant is then live at
-`https://<worker-url>/:m/…`. The demo's buyer agent (or the Carriers surface) points at a
-merchant's `/.well-known/ucp`, runs a real checkout, and shows the Tier-B `legal-context`
-placement — a genuine UCP merchant, not just a carrier round-trip.
+These merchants are deployed and ready to serve as a real UCP/AP2/x402/MCP/A2A/ACP counterparty
+for the LCP demo (`lcp-commons-demo`). It is **not yet wired in**, and it isn't a config toggle:
+today the demo's `buyer-agent` reaches a single in-mesh `seller` worker through a Cloudflare
+`SELLER` service binding (URLs built as `https://seller/…`), and there is no external-merchant
+abstraction. Pointing it here is an additive code change in the demo's `workers/buyer-agent` —
+swap the `https://seller/<path>` construction for `${MERCHANT_ORIGIN}/${MERCHANT_ID}/<merchant-path>`
+and translate to these merchants' native shapes — plus a per-run `merchantId` input. Left as a
+follow-up so nothing in the demo repo is changed here.
 
 ---
 
@@ -328,7 +337,7 @@ Uncomment the `[[d1_databases]]` block in `wrangler.toml`. Carts and orders are 
 
 ```
 src/
-  index.ts          Hono Worker — all routes (discovery, catalog CRUD, cart, checkout, ap2, x402, orders, console, report, storefront)
+  index.ts          Hono Worker — all routes (discovery, catalog CRUD, cart, checkout, ap2, x402, mcp, a2a, acp, orders, console, report, storefront)
   merchants.ts      merchant identity (keys, terms, dispute clauses, x402 payTo)
   buyer.ts          the reference verify-before-pay buyer (runBuyer + BuyerPolicy)
   report.ts         the conformance self-check suite (runReport)
@@ -364,8 +373,11 @@ test/
 
 ## Mock / testnet posture — read this
 
-- **Throwaway keys.** The signing keys in `src/merchants.ts` are committed dev keys. **Never** reuse.
-- **Mock payment.** `dev.ucp.mock_payment` authorizes but does not settle; `captured` is nominal.
+- **Throwaway keys.** The signing keys and the x402 `payTo` addresses in `src/merchants.ts` are
+  committed dev/testnet values. **Never** reuse.
+- **Mock payment on every rail.** AP2 (`dev.ucp.mock_payment`), x402 (base-sepolia USDC), and ACP
+  (`acp.delegated_payment`) all authorize but do not settle — receipts/settlements (`captured`, the
+  x402 tx hash) are nominal; nothing moves on-chain.
 - **Ephemeral state.** Catalog (in-memory mode), carts, and orders don't survive a restart or a
   second isolate. Use D1 (catalog) / Durable Objects for durability.
 - **Illustrative tax + dispute.** The tax rates and AAA clauses are illustrative; no tax authority
