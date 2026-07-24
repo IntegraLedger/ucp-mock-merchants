@@ -1,14 +1,22 @@
 # UCP + AP2 + LCP Mock Merchants
 
-Reference **merchant** surfaces for agentic commerce — mock merchants that implement
-**UCP (Universal Commerce Protocol) + AP2 (Agent Payments Protocol) + x402 (HTTP-402
-pay-per-request)** and weld in the **LCP (Legal Context Protocol)** legal-context reference.
-Runs as a single **Cloudflare Worker** (Hono), self-contained (no external LCP packages),
+Reference **merchant** surfaces for agentic commerce — mock merchants that implement **six
+agentic-commerce protocols** and weld the **LCP (Legal Context Protocol)** legal-context
+reference into every one:
+
+- **UCP** (Universal Commerce Protocol) — discovery + signed checkout
+- **AP2** (Agent Payments Protocol) — mandates + receipt
+- **x402** (HTTP-402 pay-per-request) — pay-per-call in testnet USDC
+- **MCP** (Model Context Protocol) — the merchant as a tool server
+- **A2A** (Agent2Agent) — agent card + task endpoint
+- **ACP** (Agentic Commerce Protocol, OpenAI/Stripe) — checkout sessions
+
+Runs as a single **Cloudflare Worker** (Hono), self-contained (no external packages),
 **testnet / mock posture** (throwaway keys, mock payment/settlement, no real value).
 
-**One catalog, one legal-context, three payment rails.** The same products and the same
-`atrHash` ride UCP checkout + AP2 mandates *and* an x402 challenge — so whichever protocol Fisher
-builds against, the merchant and its legal context are identical.
+**One catalog, one legal-context, every rail.** The same products and the same `atrHash` ride
+UCP checkout, AP2 mandates, an x402 challenge, MCP tool calls, A2A tasks, and ACP sessions — so
+whichever protocol Fisher builds against, the merchant and its legal context are identical.
 
 ## Live
 
@@ -63,6 +71,15 @@ pricing, hit `POST /:m/orders/quote`.
   base-sepolia) → resend with an `X-PAYMENT` header → `200` + settlement in `X-PAYMENT-RESPONSE`.
   The LCP `atrHash` rides the requirement's `extra` (same reverse-domain key as UCP). Mock: the
   payment shape is validated and a fake tx hash is returned; nothing settles on-chain.
+- **MCP (Model Context Protocol)** — the merchant as a JSON-RPC tool server (`POST /:m/mcp`) with
+  tools `search_catalog`, `get_product`, `quote_order`, `create_checkout`. `initialize` surfaces the
+  legal context in its `instructions`; `create_checkout` returns the same `lcp_reference`.
+- **A2A (Agent2Agent)** — a discoverable Agent Card at `/:m/.well-known/agent.json` (skills + an LCP
+  extension) plus a task endpoint (`POST /:m/a2a`, `message/send`) that returns a completed task whose
+  artifact is a catalog/quote/checkout result.
+- **ACP (Agentic Commerce Protocol, OpenAI/Stripe)** — checkout sessions (`POST /:m/acp/checkout_sessions`,
+  update, `/complete`, `GET`), a discovery/checkout standard parallel to UCP, implemented as a view over
+  the same Order model with the LCP reference in `links` + an extension.
 - **LCP (Legal Context Protocol)** — how the legal terms become discoverable and provable. The
   byte-stable terms hash to an **`atrHash`** (`0x` + SHA-256, 64 hex). That reference rides inside
   the signed Checkout two ways — Tier A `links[].terms_of_service` (discovery) and Tier B
@@ -207,10 +224,18 @@ Validation errors return `400 { "error": "…" }`.
 
 The `X-PAYMENT` header is base64 of a `PaymentPayload` (`{ x402Version, scheme, network, payload:{ signature, authorization } }`). `src/lib/x402.ts` exports `buildMockPaymentHeader()` for clients without a wallet; real clients sign EIP-3009 `transferWithAuthorization`.
 
+### MCP · A2A · ACP
+| Route | What |
+|---|---|
+| `POST /:m/mcp` | MCP JSON-RPC — `initialize`, `tools/list`, `tools/call` (search_catalog / get_product / quote_order / create_checkout) |
+| `GET /:m/.well-known/agent.json` | A2A Agent Card (skills + LCP extension) |
+| `POST /:m/a2a` | A2A `message/send` → a completed task whose artifact is the result |
+| `POST /:m/acp/checkout_sessions` · `POST …/:sid` · `POST …/:sid/complete` · `GET …/:sid` | ACP checkout sessions (create / update / complete / retrieve) |
+
 ### Conformance report + test UIs
 | Route | What |
 |---|---|
-| `GET /:m/report` \| `GET /report` | run the self-check suite (13 checks/merchant incl. x402) → JSON `{ ok, passed, failed, checks }`; HTTP `200` if all pass else `500` — **for Fisher's dev env / CI** |
+| `GET /:m/report` \| `GET /report` | run the self-check suite (16 checks/merchant across all six protocols) → JSON `{ ok, passed, failed, checks }`; HTTP `200` if all pass else `500` — **for Fisher's dev env / CI** |
 | `GET /console` | Worker-hosted test console — exercises every surface (discovery, catalog CRUD, cart, quote, checkout, AP2 pay, x402, order lifecycle, report) |
 | `GET /` | landing · `GET /:m/` minimal storefront · `GET /health` |
 
@@ -316,6 +341,9 @@ src/
     checkout.ts     build + sign the UCP Checkout from an order (welds the LCP reference)
     ap2.ts          AP2 — buildMandateBundle (buyer) + verifyAndReceipt (merchant) + mock payment capture
     x402.ts         x402 — requirements from the catalog, mock verify/settle, LCP weld
+    mcp.ts          MCP — JSON-RPC tool server (initialize/tools/list/tools/call)
+    a2a.ts          A2A — agent card + message/send task handler
+    acp.ts          ACP — checkout_session view over the Order model
     cart.ts         mutable cart session ops (in-memory)
 db/schema.sql       D1 schema for the durable catalog backend
 pages/index.html    standalone Cloudflare Pages test app (targets any Worker base URL)
@@ -329,6 +357,7 @@ test/
   cart.test.ts      cart lifecycle (add/increment/remove/checkout/pay)
   commerce.test.ts  catalog CRUD + order pricing (shipping/tax/promo) + variant pricing + order lifecycle
   x402.test.ts      x402 challenge → pay → settle + LCP weld + underpay rejection
+  protocols.test.ts MCP tools/call + A2A card/task + ACP session create/complete
 ```
 
 ---

@@ -21,6 +21,9 @@ import { buildX402Requirements, build402Body, verifyX402Payment, encodeSettlemen
 import { buildOrder, shippingOptionsFor, advanceStatus, OrderStore, type Address, type OrderStatus } from './lib/order.js';
 import { consolePage } from './console.js';
 import { runReport, type FetchLike } from './report.js';
+import { handleMcp, MCP_PROTOCOL_VERSION, type McpDeps, type OrderItem } from './lib/mcp.js';
+import { agentCard, handleA2A } from './lib/a2a.js';
+import { buildAcpSession } from './lib/acp.js';
 
 interface Bindings {
   DB?: D1Like; // optional D1 binding; when absent the in-memory store is used
@@ -68,6 +71,42 @@ interface OrderBody {
   shippingOptionId?: string;
   shippingAddress?: Address;
   promoCode?: string;
+}
+
+const normItems = (items?: OrderItem[]): Array<{ sku: string; variantSku?: string; qty: number }> =>
+  (items ?? []).map((i) => ({ sku: i.sku, variantSku: i.variantSku, qty: i.qty ?? 1 }));
+const addrFromRegion = (region?: string): Address | undefined =>
+  region ? { name: 'Agent Buyer', line1: '1 Main', city: 'City', region, postal: '00000', country: 'US' } : undefined;
+
+// The shared operations MCP + A2A expose (browse / quote / checkout), wired to
+// the same store + order/checkout builders as every other rail.
+async function protocolDeps(reqUrl: string, m: Merchant, env: Bindings): Promise<McpDeps> {
+  const store = productStore(env);
+  const atr = await atrFor(m);
+  const termsUrl = `${base(reqUrl, m.id)}/.well-known/legal-context.json`;
+  return {
+    serverName: `${m.name} (UCP mock merchant)`,
+    legalContext: { atrHash: atr, terms: termsUrl },
+    async searchCatalog(query?: string) {
+      const items = await store.list(m.id);
+      if (!query) return { merchant: m.id, items };
+      const q = query.toLowerCase();
+      return { merchant: m.id, items: items.filter((p) => [p.sku, p.name, p.category].some((f) => (f ?? '').toLowerCase().includes(q))) };
+    },
+    async getProduct(sku: string) {
+      return (await store.get(m.id, sku)) ?? { error: 'unknown product', sku };
+    },
+    async quoteOrder(items: OrderItem[], opts: { shippingOptionId?: string; region?: string; promoCode?: string }) {
+      return buildOrder({ orderId: 'quote', merchant: m.id, items: normItems(items), products: await store.list(m.id), shippingOptionId: opts.shippingOptionId, shippingAddress: addrFromRegion(opts.region), promoCode: opts.promoCode, createdAt: new Date().toISOString() });
+    },
+    async createCheckout(items: OrderItem[]) {
+      return signCheckout(reqUrl, m, await store.list(m.id), normItems(items), {});
+    },
+  };
+}
+
+async function acpView(reqUrl: string, m: Merchant, order: import('./lib/order.js').Order) {
+  return buildAcpSession(order, { termsUrl: `${base(reqUrl, m.id)}/.well-known/legal-context.json`, atrHash: await atrFor(m) });
 }
 
 // --- landing + health -----------------------------------------------------
@@ -126,6 +165,9 @@ app.get('/:id/.well-known/ucp', (c) => {
         'dev.ucp.shopping.checkout': [{ version: '2026-04-08', spec: 'https://ucp.dev/specification/checkout' }],
         'dev.ucp.shopping.catalog': [{ version: '2026-04-08', spec: 'https://ucp.dev/specification/catalog' }],
         'org.x402.payment': [{ version: '1', spec: 'https://x402.org', resource: `${base(c.req.url, m.id)}/x402/{sku}` }],
+        'org.modelcontextprotocol': [{ version: MCP_PROTOCOL_VERSION, transport: 'jsonrpc', endpoint: `${base(c.req.url, m.id)}/mcp` }],
+        'org.a2a': [{ version: '0.3.0', agentCard: `${base(c.req.url, m.id)}/.well-known/agent.json`, endpoint: `${base(c.req.url, m.id)}/a2a` }],
+        'org.agenticcommerce': [{ version: '2025-09-29', endpoint: `${base(c.req.url, m.id)}/acp/checkout_sessions` }],
         'org.legalcontextprotocol.legal-context': [{ version: '0.1.0', spec: 'https://legalcontextprotocol.org/standard' }],
       },
       payment_handlers: {
@@ -377,6 +419,120 @@ app.all('/:id/x402/:sku', async (c) => {
     return c.json({ paid: true, sku: product.sku, result: { delivered: product.name, sku: product.sku }, settlement, lcp_reference: lcpReference(atr) });
   } catch (err) {
     return c.json(build402Body([req], err instanceof Error ? err.message : String(err)), 402);
+  }
+});
+
+// --- per-merchant: MCP (Model Context Protocol) tool server ---------------
+// JSON-RPC over POST. Same catalog/checkout, exposed as MCP tools.
+
+app.post('/:id/mcp', async (c) => {
+  const m = getMerchant(c.req.param('id'));
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
+  const deps = await protocolDeps(c.req.url, m, c.env);
+  if (Array.isArray(body)) {
+    const out = (await Promise.all(body.map((r) => handleMcp(r, deps)))).filter(Boolean);
+    return c.json(out);
+  }
+  const res = await handleMcp(body, deps);
+  return res ? c.json(res) : c.body(null, 202);
+});
+
+// --- per-merchant: A2A (Agent2Agent) card + task endpoint -----------------
+
+app.get('/:id/.well-known/agent.json', async (c) => {
+  const m = getMerchant(c.req.param('id'));
+  return c.json(
+    agentCard({
+      name: m.name,
+      description: `UCP mock merchant — ${m.name}. Browse, quote, and check out with an LCP-bound legal context.`,
+      url: `${base(c.req.url, m.id)}/a2a`,
+      atrHash: await atrFor(m),
+      termsUrl: `${base(c.req.url, m.id)}/.well-known/legal-context.json`,
+    }),
+  );
+});
+
+app.post('/:id/a2a', async (c) => {
+  const m = getMerchant(c.req.param('id'));
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
+  const deps = await protocolDeps(c.req.url, m, c.env);
+  return c.json(await handleA2A(body, deps, { taskId: crypto.randomUUID(), contextId: crypto.randomUUID(), ts: new Date().toISOString() }));
+});
+
+// --- per-merchant: ACP (Agentic Commerce Protocol) checkout sessions ------
+// OpenAI/Stripe checkout-session flavor, as a view over our Order model.
+
+interface AcpBody {
+  items?: OrderItem[];
+  fulfillment_address?: Address;
+  shippingOptionId?: string;
+  promoCode?: string;
+}
+
+app.post('/:id/acp/checkout_sessions', async (c) => {
+  const m = getMerchant(c.req.param('id'));
+  const body = (await c.req.json().catch(() => ({}))) as AcpBody;
+  try {
+    const order = buildOrder({
+      orderId: crypto.randomUUID(),
+      merchant: m.id,
+      items: normItems(body.items),
+      products: await productStore(c.env).list(m.id),
+      shippingOptionId: body.shippingOptionId,
+      shippingAddress: body.fulfillment_address,
+      promoCode: body.promoCode,
+      createdAt: new Date().toISOString(),
+    });
+    orders.put(order);
+    return c.json(await acpView(c.req.url, m, order), 201);
+  } catch (err) {
+    return c.json(fail(err), 400);
+  }
+});
+
+app.get('/:id/acp/checkout_sessions/:sid', async (c) => {
+  const m = getMerchant(c.req.param('id'));
+  try {
+    return c.json(await acpView(c.req.url, m, orders.get(m.id, c.req.param('sid'))));
+  } catch (err) {
+    return c.json(fail(err), 404);
+  }
+});
+
+app.post('/:id/acp/checkout_sessions/:sid/complete', async (c) => {
+  const m = getMerchant(c.req.param('id'));
+  try {
+    const order = advanceStatus(orders.get(m.id, c.req.param('sid')), 'paid', new Date().toISOString());
+    order.payment = { handler: 'acp.delegated_payment', status: 'captured' };
+    return c.json(await acpView(c.req.url, m, order));
+  } catch (err) {
+    return c.json(fail(err), 400);
+  }
+});
+
+app.post('/:id/acp/checkout_sessions/:sid', async (c) => {
+  const m = getMerchant(c.req.param('id'));
+  const body = (await c.req.json().catch(() => ({}))) as AcpBody;
+  try {
+    const existing = orders.get(m.id, c.req.param('sid'));
+    if (existing.status !== 'created') throw new Error('checkout_session is no longer editable');
+    const items = body.items ? normItems(body.items) : existing.line_items.map((li) => ({ sku: li.sku, variantSku: li.variant_sku, qty: li.qty }));
+    const order = buildOrder({
+      orderId: existing.order_id,
+      merchant: m.id,
+      items,
+      products: await productStore(c.env).list(m.id),
+      shippingOptionId: body.shippingOptionId ?? existing.shipping_option?.id,
+      shippingAddress: body.fulfillment_address ?? existing.shipping_address,
+      promoCode: body.promoCode ?? existing.promo_code,
+      createdAt: existing.created_at,
+    });
+    orders.put(order);
+    return c.json(await acpView(c.req.url, m, order));
+  } catch (err) {
+    return c.json(fail(err), 400);
   }
 });
 

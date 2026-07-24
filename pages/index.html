@@ -96,6 +96,14 @@
   <button onclick="x402Pay()">Pay (mock USDC)</button>
   <div id="x402State" class="state"></div>
 
+  <h2>8 · Other protocols (MCP · A2A · ACP)</h2>
+  <p class="muted">Uses the Items field in section 4.</p>
+  <button onclick="mcpDemo()">MCP: tools/list + create_checkout</button>
+  <button onclick="a2aCard()">A2A: agent card</button>
+  <button onclick="a2aTask()">A2A: checkout task</button>
+  <button onclick="acpDemo()">ACP: create + complete</button>
+  <div id="protoState" class="state"></div>
+
   <h2>Log</h2>
   <div id="log"></div>
  </div>
@@ -222,6 +230,23 @@ async function report(){
   const total=(json.passed||0)+(json.failed||0);
   $('state').textContent = json.ok ? ('✓ conformance '+json.passed+'/'+total+' passed') : ('✗ conformance '+json.failed+' failed');
   $('state').className = json.ok ? 'state' : 'state err';
+}
+async function mcpDemo(){
+  await api('POST','/mcp',{jsonrpc:'2.0',id:1,method:'tools/list'});
+  if(!parseItems().length){ $('protoState').textContent='MCP: tools listed (fill Items to checkout)'; return; }
+  await api('POST','/mcp',{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'create_checkout',arguments:{items:parseItems()}}});
+  $('protoState').textContent='MCP: create_checkout done';
+}
+async function a2aCard(){ await api('GET','/.well-known/agent.json'); $('protoState').textContent='A2A: agent card fetched'; }
+async function a2aTask(){
+  if(!parseItems().length)return alert('Fill Items (sku:qty) in section 4');
+  const {json}=await api('POST','/a2a',{jsonrpc:'2.0',id:1,method:'message/send',params:{message:{role:'user',parts:[{kind:'data',data:{action:'checkout',items:parseItems()}}]}}});
+  $('protoState').textContent='A2A task: '+(json.result?.status?.state||'?');
+}
+async function acpDemo(){
+  if(!parseItems().length)return alert('Fill Items (sku:qty) in section 4');
+  const {json}=await api('POST','/acp/checkout_sessions',{items:parseItems(),fulfillment_address:{name:'T',line1:'1',city:'C',region:($('o_region').value||'NY'),postal:'0',country:'US'}});
+  if(json.id){ const {json:done}=await api('POST','/acp/checkout_sessions/'+json.id+'/complete'); $('protoState').textContent='ACP session: '+(done.status||'?'); }
 }
 async function verifyTerms(){
   const {json:lc}=await api('GET','/.well-known/legal-context.json');

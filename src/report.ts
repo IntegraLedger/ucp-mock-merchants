@@ -189,6 +189,38 @@ export async function runReport(o: RunReportOptions): Promise<Report> {
     return [ok, `fulfilled→shipped→delivered ok; illegal re-fulfill → ${illegal.status}`];
   });
 
+  await run('mcp-tools', async () => {
+    const init = (await (await post('/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })).json()) as { result?: { protocolVersion?: string } };
+    if (!init.result?.protocolVersion) return [false, 'initialize failed'];
+    const list = (await (await post('/mcp', { jsonrpc: '2.0', id: 2, method: 'tools/list' })).json()) as { result?: { tools?: unknown[] } };
+    const tools = list.result?.tools ?? [];
+    const cat = (await (await get('/catalog')).json()) as { items?: Array<{ sku: string }> };
+    const call = (await (await post('/mcp', { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'create_checkout', arguments: { items: [{ sku: cat.items?.[0]?.sku, qty: 1 }] } } })).json()) as { result?: { content?: Array<{ text?: string }> } };
+    const okCheckout = (call.result?.content?.[0]?.text ?? '').includes('checkout_jwt');
+    return [tools.length > 0 && okCheckout, `initialize ok · ${tools.length} tools · create_checkout → ${okCheckout ? 'checkout_jwt' : 'no jwt'}`];
+  });
+
+  await run('a2a-agent', async () => {
+    const card = (await (await get('/.well-known/agent.json')).json()) as { skills?: unknown[]; [k: string]: unknown };
+    const skills = card.skills ?? [];
+    const ext = card[LCP_EXTENSION_KEY] as { value?: string } | undefined;
+    if (skills.length === 0) return [false, 'agent card has no skills'];
+    if (ext?.value !== lc?.atrHash) return [false, 'agent card missing LCP weld'];
+    const cat = (await (await get('/catalog')).json()) as { items?: Array<{ sku: string }> };
+    const task = (await (await post('/a2a', { jsonrpc: '2.0', id: 1, method: 'message/send', params: { message: { role: 'user', parts: [{ kind: 'data', data: { action: 'checkout', items: [{ sku: cat.items?.[0]?.sku, qty: 1 }] } }] } } })).json()) as { result?: { status?: { state?: string }; artifacts?: Array<{ parts?: Array<{ data?: { checkout_jwt?: string } }> }> } };
+    const ok = task.result?.status?.state === 'completed' && !!task.result?.artifacts?.[0]?.parts?.[0]?.data?.checkout_jwt;
+    return [ok, `card ${skills.length} skills + LCP · task ${task.result?.status?.state}`];
+  });
+
+  await run('acp-session', async () => {
+    const cat = (await (await get('/catalog')).json()) as { items?: Array<{ sku: string }> };
+    const create = (await (await post('/acp/checkout_sessions', { items: [{ sku: cat.items?.[0]?.sku, qty: 1 }], fulfillment_address: { name: 'R', line1: '1', city: 'C', region: 'NY', postal: '0', country: 'US' } })).json()) as { id?: string; status?: string; totals?: Array<{ type: string; amount: number }> };
+    if (create.status !== 'ready_for_payment') return [false, `create status ${create.status}`];
+    const total = create.totals?.find((t) => t.type === 'total');
+    const done = (await (await post(`/acp/checkout_sessions/${create.id}/complete`, {})).json()) as { status?: string };
+    return [done.status === 'completed', `ready_for_payment → completed (total ${total?.amount})`];
+  });
+
   const passed = checks.filter((c) => c.ok).length;
   return { merchant: base.split('/').pop() ?? base, base, ok: passed === checks.length, passed, failed: checks.length - passed, checks, ran_at: o.ranAt };
 }
