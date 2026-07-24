@@ -3,6 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2026-04-15"
 compatibility_flags = ["nodejs_compat"]
 
-# Self-contained: no bindings required. Signing keys are throwaway DEV keys in
-# src/merchants.ts (mock/testnet posture). To move product info to D1 later, add a
-# [[d1_databases]] binding here + db/schema.sql, and read the catalog from it.
+# Self-contained: no bindings required. The product catalog uses an in-memory
+# store (seeded) unless a D1 binding named DB is present. Signing keys are
+# throwaway DEV keys in src/merchants.ts (mock/testnet posture).
+#
+# To make the catalog durable, create a D1 database and uncomment this block
+# (see db/schema.sql for the setup steps):
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "ucp-mock-merchants"
+# database_id = "<your-d1-database-id>"

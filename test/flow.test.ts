@@ -3,6 +3,8 @@ import { atrHashOf, verifyJws, publicOf, type PrivateJwk } from '../src/lib/cryp
 import { verifyTermsHash } from '../src/lib/lcp.js';
 import { buildSignedCheckout } from '../src/lib/checkout.js';
 import { buildMandateBundle, verifyAndReceipt } from '../src/lib/ap2.js';
+import { buildOrder } from '../src/lib/order.js';
+import { SEED } from '../src/lib/catalog.js';
 import { getMerchant, MERCHANT_IDS } from '../src/merchants.js';
 
 async function buyerKey(): Promise<PrivateJwk> {
@@ -14,13 +16,20 @@ async function buyerKey(): Promise<PrivateJwk> {
 async function checkoutFor(id: string) {
   const m = getMerchant(id);
   const atrHash = await atrHashOf(m.terms);
+  const products = SEED[id]!;
+  const order = buildOrder({
+    orderId: 'chk_test',
+    merchant: m.id,
+    items: [{ sku: products[0]!.sku, qty: 1 }],
+    products,
+    createdAt: '2026-07-24T00:00:00Z',
+  });
   const co = await buildSignedCheckout({
     merchant: m,
-    items: [{ sku: m.catalog[0]!.sku, qty: 1 }],
+    order,
     atrHash,
     legalContextUrl: `https://example.com/${id}/.well-known/legal-context.json`,
     disputeResolution: m.disputeResolution,
-    checkoutId: 'chk_test',
     createdAt: '2026-07-24T00:00:00Z',
   });
   return { m, atrHash, co };

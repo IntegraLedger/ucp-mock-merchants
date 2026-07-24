@@ -11,7 +11,9 @@
     "deploy": "wrangler deploy",
     "test": "vitest run",
     "smoke": "tsx scripts/smoke.ts",
-    "buyer": "tsx scripts/buyer.ts"
+    "buyer": "tsx scripts/buyer.ts",
+    "report": "tsx scripts/report.ts",
+    "pages:deploy": "wrangler pages deploy pages --project-name ucp-mock-merchants-console"
   },
   "dependencies": {
     "hono": "^4.6.14"

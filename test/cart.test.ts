@@ -11,7 +11,7 @@ const json = async <T>(r: Response): Promise<T> => (await r.json()) as T;
 interface CartV {
   session_id: string;
   status: string;
-  total: { amount: number; currency: string };
+  subtotal: { amount: number; currency: string };
   line_items: Array<{ sku: string; qty: number }>;
 }
 interface CheckoutV {
@@ -49,7 +49,7 @@ describe('mutable cart session (add / remove / checkout / pay)', () => {
     // remove one line
     const afterRemove = await json<CartV>(await call('DELETE', `/homegoods/cart/${sid}/items/lamp-arc`));
     expect(afterRemove.line_items).toHaveLength(1);
-    expect(afterRemove.total.amount).toBe(24000); // 2 × $120.00 rug
+    expect(afterRemove.subtotal.amount).toBe(24000); // 2 × $120.00 rug
 
     // checkout → signed UCP checkout with the LCP reference welded in
     const co = await json<CheckoutV>(await call('POST', `/homegoods/cart/${sid}/checkout`));

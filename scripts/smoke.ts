@@ -6,6 +6,8 @@ import { atrHashOf, verifyJws, publicOf, type PrivateJwk } from '../src/lib/cryp
 import { verifyTermsHash } from '../src/lib/lcp.js';
 import { buildSignedCheckout } from '../src/lib/checkout.js';
 import { buildMandateBundle, verifyAndReceipt } from '../src/lib/ap2.js';
+import { buildOrder } from '../src/lib/order.js';
+import { SEED } from '../src/lib/catalog.js';
 import { getMerchant } from '../src/merchants.js';
 
 const log = (ok: boolean, msg: string) => console.log(`${ok ? '✓' : '✗'} ${msg}`);
@@ -24,14 +26,21 @@ async function main(): Promise<void> {
   const buyerKey = await newBuyerKey();
   const now = 1_800_000_000; // fixed injected time
 
-  // 1. Merchant produces a signed UCP checkout with the LCP reference welded in.
+  // 1. Merchant prices an order + produces a signed UCP checkout with the LCP reference welded in.
+  const order = buildOrder({
+    orderId: 'chk_smoke_1',
+    merchant: m.id,
+    items: [{ sku: 'rug-9x12', qty: 1 }],
+    products: SEED.homegoods!,
+    shippingAddress: { name: 'A Buyer', line1: '1 Main', city: 'NYC', region: 'NY', postal: '10001', country: 'US' },
+    createdAt: '2026-07-24T00:00:00Z',
+  });
   const co = await buildSignedCheckout({
     merchant: m,
-    items: [{ sku: 'rug-9x12', qty: 1 }],
+    order,
     atrHash,
     legalContextUrl: 'https://example.com/homegoods/.well-known/legal-context.json',
     disputeResolution: m.disputeResolution,
-    checkoutId: 'chk_smoke_1',
     createdAt: '2026-07-24T00:00:00Z',
   });
   const ext = co.checkout.extensions['org.legalcontextprotocol.legal-context'] as { value: string };
