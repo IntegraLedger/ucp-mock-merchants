@@ -1,0 +1,26 @@
+{
+  "name": "ucp-mock-merchants",
+  "version": "0.1.0",
+  "description": "Mock UCP + AP2 merchants (with LCP legal-context binding) as a Cloudflare Worker — testnet/mock, for dev/test and wiring into the LCP demo.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "private": false,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "smoke": "tsx scripts/smoke.ts",
+    "buyer": "tsx scripts/buyer.ts"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "wrangler": "^4.20.0"
+  }
+}

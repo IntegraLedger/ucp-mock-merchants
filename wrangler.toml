@@ -1,0 +1,8 @@
+name = "ucp-mock-merchants"
+main = "src/index.ts"
+compatibility_date = "2026-04-15"
+compatibility_flags = ["nodejs_compat"]
+
+# Self-contained: no bindings required. Signing keys are throwaway DEV keys in
+# src/merchants.ts (mock/testnet posture). To move product info to D1 later, add a
+# [[d1_databases]] binding here + db/schema.sql, and read the catalog from it.
